@@ -9,14 +9,19 @@ export class AuthAppMobileService {
   constructor(private readonly nats: NatsService) {}
 
   async loginAppMobile(body: any): Promise<any> {
+    let code = '+591';
     const {
       username,
+      countryCode,
       cellphone,
       signature,
       firebaseToken,
       isBiometric,
       isRegisterCellphone,
     } = body;
+
+    if (countryCode) code = countryCode;
+
     let directAccess = false;
     if (
       TestDeviceEnvs.userTestDevice === username &&
@@ -161,36 +166,49 @@ export class AuthAppMobileService {
     if (directAccess) {
       return {
         error: false,
-        message: validateWhoIsThePerson.message + ' Login de prueba',
+        message: validateWhoIsThePerson.message + ', Inicio de sesión para pruebas',
         data,
       };
     }
     if (isBiometric) {
-      this.logger.log('Login AppMobile con huella dactilar');
       return {
         error: false,
         message:
-          validateWhoIsThePerson.message + ' Login mediante huella dactilar',
+          validateWhoIsThePerson.message + ' Inicio de sesión mediante huella dactilar',
         data,
       };
     }
     const pin = Math.floor(1000 + Math.random() * 9000).toString();
-    const messageSend = `Tu pin de seguridad es: ${pin}\n#muserpolpvt ${signature}`;
-    const cellphoneCodePostal = `591${cellphone}`;
+    const messageSend = `Tu pin de seguridad es: ${pin} \n#muserpolpvt `;
+    const cellphoneCodePostal = `${code}${cellphone}`;
     data.information['pin'] = pin;
-    const { status, message, messageId } = await this.nats.firstValue(
-      'sms.send',
-      { cellphone: cellphoneCodePostal, message: messageSend },
-    );
+    let responseSend: any;
+
+    if(code != '+591'){
+      responseSend = await this.nats.firstValue(
+        'whatsapp.send',
+        { cellphone: cellphoneCodePostal, message: messageSend },
+      );
+      data.information['typeAuth'] = 'whatsapp';
+    }else{
+      responseSend = await this.nats.firstValue(
+        'sms.send',
+        { cellphone: cellphoneCodePostal, message: messageSend+`${signature}` },
+      );
+      data.information['typeAuth'] = 'sms';
+    }
+
+    const { error, message, messageId } = responseSend;
+
     await this.nats.firstValue('ftp.saveDataTmp', {
       path: 'appMobileAuth',
       name: messageId,
       data: data,
     });
-    this.logger.log('Login AppMobile con envío de sms');
+
     return {
-      error: !status,
-      message: message + ' Login mediante SMS',
+      error: error,
+      message: message,
       messageId,
     };
   }
@@ -210,26 +228,25 @@ export class AuthAppMobileService {
       };
     }
 
-    // DESCOMENTAR CUANDO SE SOLUCIONE BUG EN LA APP MOVIL DE VERIFICACION AL AUTOCOMPLETAR
-    // if (!data.information || typeof data.information.pin === 'undefined') {
-    //   return {
-    //     error: true,
-    //     message: 'El pin ha expirado, vuelva a iniciar sesión',
-    //   };
-    // }
+    if (!data.information || typeof data.information.pin === 'undefined') {
+      return {
+        error: true,
+        message: 'El pin ha expirado, vuelva a iniciar sesión',
+      };
+    }
 
-    const { pin: expectedPin, ...information } = data.information;
+    const { pin: expectedPin, typeAuth, ...information } = data.information;
 
     if (pin !== expectedPin) {
       return {
         error: true,
-        message: 'Pin incorrecto',
+        message: `Pin incorrecto via ${typeAuth}`,
       };
     }
 
     return {
       error: false,
-      message: 'Pin verificado, Inicio de sesión con envío de sms',
+      message: `Pin verificado via ${typeAuth}`,
       data: {
         apiToken: data.apiToken,
         information,
